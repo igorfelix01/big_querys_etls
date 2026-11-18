@@ -4,6 +4,13 @@
 -- Pergunta do Fabio: "quais vendas estao performando pior?"
 -- 3 visuais, todos com a MESMA regra da inadimplencia_safra:
 --   % inadimplencia 60+ = saldo vencido ha 60+ dias / saldo em aberto
+--   % contratos 60+     = Contratos60 / Contratos
+--   INADIMPLENTE = 90+ dias:
+--   % parcelas 90+      = SaldoVencido90 / SaldoAberto
+--   % contratos 90+     = Contratos90 / Contratos
+--   % carteira 90+      = SaldoContratos90 / SaldoAberto (saldo inteiro
+--                         dos contratos inadimplentes)
+--   parcelas que vencem antes da data da venda ficam de fora
 --   (CT, empresa pelo centro de custo, sem Bloko, sem distratados)
 --
 -- Agrupamento das safras igual ao da analise de recebiveis:
@@ -82,7 +89,11 @@ SELECT
   END                                           AS OrdemIdade,
   SaldoAberto,
   SaldoVencido60,
-  Contratos
+  Contratos,
+  Contratos60,
+  SaldoVencido90,
+  Contratos90,
+  SaldoContratos90
 FROM `dadosfinanceiro-501613.looker_studio.inadimplencia_safra`;
 
 
@@ -170,11 +181,13 @@ aberto AS (
     p.ChaveGeral,
     p.valor,
     p.dueDate <= DATE_SUB(h.d, INTERVAL 60 DAY)            AS vencido60,
+    p.dueDate <= DATE_SUB(h.d, INTERVAL 90 DAY)            AS vencido90,
     p.dueDate <  h.d                                        AS vencido
   FROM parcela p
   JOIN contrato c USING (ChaveGeral)
   CROSS JOIN hoje h
   WHERE p.em_aberto
+    AND p.dueDate >= c.venda     -- parcela que vence antes da venda fica de fora
     AND c.venda IS NOT NULL
     AND c.venda <= h.d
     AND (c.distrato IS NULL OR c.distrato > h.d)
@@ -192,8 +205,14 @@ SELECT
   ROUND(SUM(IF(vencido, valor, 0)), 2)                      AS SaldoVencido,
   COUNT(DISTINCT ChaveGeral)                                AS Contratos,
   COUNT(DISTINCT IF(vencido60, ChaveGeral, NULL))           AS Contratos60,
+  ROUND(SUM(IF(vencido90, valor, 0)), 2)                    AS SaldoVencido90,
+  COUNT(DISTINCT IF(vencido90, ChaveGeral, NULL))           AS Contratos90,
+  ROUND(SUM(IF(contrato90, valor, 0)), 2)                   AS SaldoContratos90,
   (SELECT d FROM hoje)                                      AS DataReferencia
-FROM aberto
+FROM (
+  SELECT *, LOGICAL_OR(vencido90) OVER (PARTITION BY ChaveGeral) AS contrato90
+  FROM aberto
+)
 GROUP BY 1, 2, 3, 4, 5, 6, 7;
 
 

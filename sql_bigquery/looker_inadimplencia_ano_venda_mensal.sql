@@ -23,6 +23,8 @@
 --   % Inadimplente = SUM(SaldoInadimplente) / SUM(SaldoAberto)
 --   % Vencido      = SUM(SaldoVencido)      / SUM(SaldoAberto)
 --
+-- Parcelas que vencem ANTES da data da venda ficam de fora (contrato
+-- cedido/transferido: criavam um pico falso, ex.: nov/2024 na Inlot).
 -- Parcela = ChaveGeral + ChaveEspecifica + dueDate; paga em = ultimo
 -- pagamento (se ainda esta no A Receber, nao foi paga).
 -- Sem periodo fixo: o periodo e o filtro de Mes no Looker.
@@ -100,6 +102,7 @@ intervalos AS (
   FROM parcela p, hoje h
   WHERE p.venda IS NOT NULL
     AND p.venda <= h.d
+    AND p.dueDate >= p.venda     -- parcela que vence antes da venda fica de fora
 ),
 
 iv AS (
