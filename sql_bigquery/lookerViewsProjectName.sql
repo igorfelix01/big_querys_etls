@@ -178,6 +178,10 @@ SELECT 'renegociacao_base' AS tabela, (SELECT COUNT(*) FROM `dadosfinanceiro-501
 
 UNION ALL
 
+SELECT 'renegociacao_eventos' AS tabela, (SELECT COUNT(*) FROM `dadosfinanceiro-501613.looker_studio.renegociacao_eventos`) AS linhas
+
+UNION ALL
+
 SELECT 'renegociacao_numero' AS tabela, (SELECT COUNT(*) FROM `dadosfinanceiro-501613.looker_studio.renegociacao_numero`) AS linhas
 
 UNION ALL

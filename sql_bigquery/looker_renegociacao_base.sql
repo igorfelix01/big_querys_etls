@@ -1,39 +1,31 @@
 -- ####################################################################
 -- LOOKER_STUDIO.RENEGOCIACAO_BASE
--- Pagina Renegociacao - base de todos os graficos da pagina
--- 1o grafico: "Contratos Renegociados - Situacao"
--- + tabela "Detalhamento Renegociacoes", barra "Composicao" e cards
---   SD ReparcMes / Acum. SD Recuperado / SD Recuperado / Acum. Recebido
---   (SDSemJuros = SaldoDevedorSemJuros do titulos_totalizador;
---    SDRecuperado = SDSemJuros so de Adimplente e Quitado;
---    ValorRecebidoAposReneg = db_recebidas[ValorBruto] do contrato com
---    paymentDate >= data do reparcelamento, igual a coluna do BI)
+-- Pagina Renegociacao - visao por CONTRATO (1 linha por contrato
+-- renegociado), para a tabela "Detalhamento Renegociacoes", a barra
+-- "Composicao" e os cards SD ReparcMes / Acum. SD Recuperado /
+-- SD Recuperado / Acum. Recebido.
+-- (graficos por MES usam looker_studio.renegociacao_eventos)
 --
--- Visual do BI:
---   Eixo X  : Calendario[Date] (Ano > Mes)  -> data do reparcelamento
---   Colunas : Contagem de Reparcelamento_Analise[ChaveGeral]
---   Legenda : db_titulos_totalizador[SituacaoContrato]
+-- Fonte (igual ao BI): o extrato de reparcelamento, via
+-- looker_studio.renegociacao_eventos. A data do contrato e a da ULTIMA
+-- renegociacao (= UltimaDataReparcelamento do extrato; conferido: bate
+-- em 100% dos contratos). Nao depende mais de o Sienge confirmar:
+-- a coluna ConfirmadoNoSienge mostra isso e pode ser usada como filtro.
+-- Cobranca 3P continua fora; companyGroup sem Bloko e sem vazio.
+-- Filtro CT fica no Looker. SEM periodo no SQL.
 --
--- 1 linha por CONTRATO renegociado (ChaveGeral), com os campos dos
--- filtros da pagina:
---   Periodo          -> DataReparcelamento (UltimaDataReparcelamento)
---   Pesquisa de ID   -> ChaveGeral
---   Status Projeto   -> StatusPerf   (dv_Performados, pelo enterpriseId)
---   Empresa/Projeto  -> companyGroup / companyName (NomeCompanhias,
---                       pelo enterpriseId = centro de custo)
---   CT               -> documentIdentificationId (do titulos_totalizador)
+-- Colunas novas:
+--   QtdRenegociacoes        quantas vezes o contrato foi renegociado
+--   PrimeiraDataReneg       data da 1a renegociacao
+--   SituacaoNaUltimaReneg   situacao no dia anterior a ultima renegociacao
+--   SituacaoContrato        situacao HOJE
+--   ConfirmadoNoSienge      a ultima renegociacao existe hoje no Sienge?
+--   RenegociacaoAberta / StatusRenegociacao  ainda tem parcela a pagar?
 --
--- JA FILTRADO no SQL (vale para todos os graficos da pagina):
---   companyGroup nao e Bloko Capital e nao e em branco
--- O filtro CT (documentIdentificationId = 'CT') fica no Looker.
---
--- SEM periodo no SQL: o periodo e controlado no Looker.
---
--- Depende de: analytics.fato_reparcelamento_analise,
---             analytics.fato_titulos_totalizador,
---             analytics.dim_nome_companhias, analytics.dim_perfomados,
---             analytics.saldo_devedor (RenegociacaoAberta),
---             analytics.fato_renegociacoes (reparcelamento valido no Sienge)
+-- Depende de: looker_studio.renegociacao_eventos,
+--             analytics.fato_reparcelamento_analise,
+--             analytics.fato_titulos_totalizador, analytics.fato_recebidas,
+--             analytics.saldo_devedor
 -- ####################################################################
 
 DROP TABLE IF EXISTS
@@ -43,161 +35,106 @@ CREATE OR REPLACE TABLE
   `dadosfinanceiro-501613.looker_studio.renegociacao_base`
 CLUSTER BY companyGroup, SituacaoContrato
 AS
-
 WITH
-
--- reparcelamentos que EXISTEM HOJE no Sienge (operacao 'Reparcelamento'
--- nas recebidas, carga diaria). Reparcelamento excluido/cancelado no
--- Sienge some daqui no dia seguinte.
-reneg_sienge AS (
-  SELECT
-    CAST(ChaveGeral AS STRING) AS ChaveGeral,
-    MAX(paymentDate)           AS UltimaDataSienge
-  FROM `dadosfinanceiro-501613.analytics.fato_renegociacoes`
-  WHERE ChaveGeral IS NOT NULL
-  GROUP BY 1
-),
-
--- contratos do extrato (dados do cliente) que tem reparcelamento valido
--- no Sienge. O extrato (EXTRATO_GERAL_Reparcelamento_Analise.csv) e uma
--- foto tirada no dia em que foi gerado: se o reparcelamento foi excluido
--- depois, ele continuava la. Agora so entra quem o Sienge confirma, e a
--- data do reparcelamento e a ultima valida no Sienge.
-reparcelamento AS (
-  SELECT
-    x.ChaveGeral,
-    s.UltimaDataSienge AS UltimaDataReparcelamento,
-    x.enterpriseId,
-    x.NomeCliente,
-    x.Unidade,
-    x.CPF,
-    x.CNPJ,
-    x.Telefone,
-    x.Email
-  FROM (
-    SELECT
-      ChaveGeral,
-      SAFE_CAST(enterpriseId AS INT64) AS enterpriseId,
-      NomeCliente,
-      Unidade,
-      CPF,
-      CNPJ,
-      Telefone,
-      Email
-    FROM `dadosfinanceiro-501613.analytics.fato_reparcelamento_analise`
-    WHERE ChaveGeral IS NOT NULL
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY ChaveGeral
-                               ORDER BY UltimaDataReparcelamento DESC) = 1
-  ) x
-  JOIN reneg_sienge s
-    ON s.ChaveGeral = CAST(x.ChaveGeral AS STRING)
-),
-
-nome_companhias AS (
-  SELECT
-    SAFE_CAST(enterpriseId AS INT64) AS enterpriseId,
-    companyGroup,
-    companyName,
-    projectName
-  FROM `dadosfinanceiro-501613.analytics.dim_nome_companhias`
-  WHERE enterpriseId IS NOT NULL
-  QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY SAFE_CAST(enterpriseId AS INT64)
-    ORDER BY companyGroup, companyName
-  ) = 1
-),
-
-performados AS (
-  SELECT
-    SAFE_CAST(enterpriseId AS INT64) AS enterpriseId,
-    StatusPerf
-  FROM `dadosfinanceiro-501613.analytics.dim_perfomados`
-  WHERE enterpriseId IS NOT NULL
-  QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY SAFE_CAST(enterpriseId AS INT64)
-    ORDER BY StatusPerf
-  ) = 1
-),
-
-titulos AS (
+-- ultima renegociacao de cada contrato (+ primeira e quantidade)
+ultima AS (
   SELECT
     ChaveGeral,
-    ANY_VALUE(SituacaoContrato)         AS SituacaoContrato,
-    ANY_VALUE(documentIdentificationId) AS documentIdentificationId,
+    DataReparcelamento,
+    TotalRenegociacoes,
+    SituacaoNaRenegociacao,
+    AtrasoNaRenegociacao,
+    ConfirmadoNoSienge,
+    companyGroup, companyName, projectName, StatusPerf,
+    SituacaoContrato, documentIdentificationId, subJudicie,
+    enterpriseId, NomeCliente, Unidade,
+    MIN(DataReparcelamento) OVER (PARTITION BY ChaveGeral) AS PrimeiraDataReneg
+  FROM `dadosfinanceiro-501613.looker_studio.renegociacao_eventos`
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY ChaveGeral
+                             ORDER BY DataReparcelamento DESC) = 1
+),
+cliente AS (
+  SELECT ChaveGeral, CPF, CNPJ, Telefone, Email
+  FROM `dadosfinanceiro-501613.analytics.fato_reparcelamento_analise`
+  WHERE ChaveGeral IS NOT NULL
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY ChaveGeral
+                             ORDER BY UltimaDataReparcelamento DESC) = 1
+),
+titulos AS (
+  SELECT
+    CAST(ChaveGeral AS STRING)          AS ChaveGeral,
     ANY_VALUE(MaxAtrasoDias)            AS MaxAtrasoDias,
     ANY_VALUE(PrimeiraDataVencimento)   AS PrimeiraDataVencimento,
     ANY_VALUE(SaldoDevedorSemJuros)     AS SaldoDevedorSemJuros,
     ANY_VALUE(SaldoDevedorComJuros)     AS SaldoDevedorComJuros,
-    ANY_VALUE(ValorLiquidoAgregado)     AS ValorLiquidoAgregado,
-    ANY_VALUE(subJudicie)               AS subJudicie
+    ANY_VALUE(ValorLiquidoAgregado)     AS ValorLiquidoAgregado
   FROM `dadosfinanceiro-501613.analytics.fato_titulos_totalizador`
-  GROUP BY ChaveGeral
+  GROUP BY 1
 ),
-
--- recebido DEPOIS da renegociacao = coluna ValorRecebidoAposReneg do BI:
---   SUM(db_recebidas[ValorBruto]) do contrato com
---   paymentDate >= UltimaDataReparcelamento  (sem filtro de Conta)
+-- recebido DEPOIS da ultima renegociacao (coluna ValorRecebidoAposReneg
+-- do BI: db_recebidas[ValorBruto], paymentDate >= data, sem filtro de Conta)
 recebido_apos AS (
   SELECT
-    rc.ChaveGeral,
+    u.ChaveGeral,
     SUM(CAST(rc.ValorBruto AS FLOAT64)) AS ValorRecebidoAposReneg
   FROM `dadosfinanceiro-501613.analytics.fato_recebidas` rc
-  JOIN reparcelamento r
-    ON r.ChaveGeral = rc.ChaveGeral
-  WHERE SAFE_CAST(rc.paymentDate AS DATE) >= r.UltimaDataReparcelamento
-  GROUP BY rc.ChaveGeral
+  JOIN ultima u
+    ON u.ChaveGeral = CAST(rc.ChaveGeral AS STRING)
+  WHERE SAFE_CAST(rc.paymentDate AS DATE) >= u.DataReparcelamento
+  GROUP BY 1
 ),
-
--- renegociacao ABERTA = o contrato ainda tem parcela a pagar no A Receber
--- (no Sienge o reparcelamento substitui as parcelas em aberto pelas novas,
---  entao as parcelas em aberto hoje sao as da renegociacao) e nao foi
---  distratado. Sem parcela em aberto = renegociacao encerrada (quitada).
+-- renegociacao ABERTA = ainda tem parcela a pagar no A Receber e nao foi
+-- distratado (o reparcelamento troca as parcelas em aberto pelas novas)
 parcelas_abertas AS (
   SELECT
-    CAST(ChaveGeral AS STRING)                                        AS ChaveGeral,
+    CAST(ChaveGeral AS STRING) AS ChaveGeral,
     COUNT(DISTINCT IF(OrigemBase = 'A Receber',
           CONCAT(CAST(ChaveEspecifica AS STRING), '|', CAST(dueDate AS STRING)), NULL)) AS ParcelasEmAberto,
     COUNT(DISTINCT IF(OrigemBase = 'A Receber'
                         AND dueDate < CURRENT_DATE('America/Sao_Paulo'),
           CONCAT(CAST(ChaveEspecifica AS STRING), '|', CAST(dueDate AS STRING)), NULL)) AS ParcelasVencidasEmAberto,
-    MAX(cancellationDate)                                             AS DataDistrato
+    MAX(cancellationDate)      AS DataDistrato
   FROM `dadosfinanceiro-501613.analytics.saldo_devedor`
   WHERE ChaveGeral IS NOT NULL
   GROUP BY 1
 )
-
 SELECT
-  r.ChaveGeral,
-  r.UltimaDataReparcelamento                       AS DataReparcelamento,
-  DATE_TRUNC(r.UltimaDataReparcelamento, MONTH)    AS MesReparcelamento,
-  EXTRACT(YEAR FROM r.UltimaDataReparcelamento)    AS Ano,
+  u.ChaveGeral,
+  u.DataReparcelamento,
+  DATE_TRUNC(u.DataReparcelamento, MONTH)          AS MesReparcelamento,
+  EXTRACT(YEAR FROM u.DataReparcelamento)          AS Ano,
+  u.PrimeiraDataReneg,
+  u.TotalRenegociacoes                             AS QtdRenegociacoes,
 
-  nc.companyGroup,
-  nc.companyName,
-  nc.projectName,
-  p.StatusPerf,
+  u.companyGroup,
+  u.companyName,
+  u.projectName,
+  u.StatusPerf,
 
-  t.SituacaoContrato,
-  t.documentIdentificationId,
+  u.SituacaoContrato,                              -- hoje
+  u.SituacaoNaRenegociacao                         AS SituacaoNaUltimaReneg,
+  u.AtrasoNaRenegociacao                           AS AtrasoNaUltimaReneg,
+  u.documentIdentificationId,
+  u.ConfirmadoNoSienge,
 
-  r.enterpriseId,
-  r.NomeCliente,
-  r.Unidade,
+  u.enterpriseId,
+  u.NomeCliente,
+  u.Unidade,
 
   -- ===== tabela Detalhamento Renegociacoes =====
   t.MaxAtrasoDias                                  AS Atraso,
   t.PrimeiraDataVencimento                         AS Vencimento,
   ROUND(t.SaldoDevedorComJuros, 2)                 AS SaldoDevedor,
   ROUND(t.ValorLiquidoAgregado, 2)                 AS ValorRecebido,
-  t.subJudicie,
-  r.CPF,
-  r.CNPJ,
-  r.Telefone,
-  r.Email,
+  u.subJudicie,
+  c.CPF,
+  c.CNPJ,
+  c.Telefone,
+  c.Email,
 
   -- ===== cards =====
   ROUND(t.SaldoDevedorSemJuros, 2)                 AS SDSemJuros,
-  ROUND(IF(t.SituacaoContrato IN ('Adimplente', 'Quitado'),
+  ROUND(IF(u.SituacaoContrato IN ('Adimplente', 'Quitado'),
            t.SaldoDevedorSemJuros, 0), 2)          AS SDRecuperado,
   ROUND(IFNULL(ra.ValorRecebidoAposReneg, 0), 2)   AS ValorRecebidoAposReneg,
 
@@ -213,60 +150,19 @@ SELECT
   IFNULL(pa.ParcelasEmAberto, 0)                   AS ParcelasEmAberto,
   IFNULL(pa.ParcelasVencidasEmAberto, 0)           AS ParcelasVencidasEmAberto,
 
-  1 AS Contratos           -- no Looker: SOMA (= contagem de ChaveGeral)
-
-FROM reparcelamento r
-JOIN nome_companhias nc
-  ON nc.enterpriseId = r.enterpriseId
-LEFT JOIN performados p
-  ON p.enterpriseId = r.enterpriseId
-LEFT JOIN titulos t
-  ON t.ChaveGeral = r.ChaveGeral
-LEFT JOIN recebido_apos ra
-  ON ra.ChaveGeral = r.ChaveGeral
-LEFT JOIN parcelas_abertas pa
-  ON pa.ChaveGeral = CAST(r.ChaveGeral AS STRING)
-WHERE nc.companyGroup IS NOT NULL
-  AND TRIM(nc.companyGroup) <> ''
-  AND nc.companyGroup <> 'Bloko Capital';
--- [CONFERENCIA desativada na atualizacao automatica para ganhar tempo:
---  para conferir, copie o trecho abaixo sem os '-- ' e rode no BigQuery]
-
+  1 AS Contratos           -- no Looker: SOMA
+FROM ultima u
+LEFT JOIN cliente c           ON c.ChaveGeral = u.ChaveGeral
+LEFT JOIN titulos t           ON t.ChaveGeral = u.ChaveGeral
+LEFT JOIN recebido_apos ra    ON ra.ChaveGeral = u.ChaveGeral
+LEFT JOIN parcelas_abertas pa ON pa.ChaveGeral = u.ChaveGeral;
 
 
 -- ####################################################################
--- VALIDACAO dos CARDS contra o BI (periodo 01/05/2025 a 24/09/2026)
--- BI: SD ReparcMes 9.850.365 | Acum. SD Recuperado 61.941.721
---     SD Recuperado 35.056.562 | Acum. Recebido Reneg. 60.967.917
--- (linha 1 = so CT; linha 2 = todos os documentos)
+-- CONFERENCIA (rodar na mao)
 -- ####################################################################
--- SELECT
---   IF(documentIdentificationId = 'CT', 'so CT', 'todos')            AS filtro,
---   ROUND(SUM(IF(MesReparcelamento = DATE '2026-09-01', SDSemJuros, 0)))  AS sd_reparc_mes,
---   ROUND(SUM(SDRecuperado))                                          AS acum_sd_recuperado,
---   ROUND(SUM(IF(DataReparcelamento BETWEEN '2025-05-01' AND '2026-09-24',
---                SDRecuperado, 0)))                                   AS sd_recuperado_periodo,
---   ROUND(SUM(ValorRecebidoAposReneg))                                AS acum_recebido_reneg,
---   COUNT(*)                                                          AS contratos
+-- SELECT StatusRenegociacao, ConfirmadoNoSienge, COUNT(*) AS contratos,
+--        ROUND(SUM(SaldoDevedor), 2) AS saldo_devedor
 -- FROM `dadosfinanceiro-501613.looker_studio.renegociacao_base`
 -- WHERE documentIdentificationId = 'CT'
--- GROUP BY 1
--- UNION ALL
--- SELECT
---   'todos',
---   ROUND(SUM(IF(MesReparcelamento = DATE '2026-09-01', SDSemJuros, 0))),
---   ROUND(SUM(SDRecuperado)),
---   ROUND(SUM(IF(DataReparcelamento BETWEEN '2025-05-01' AND '2026-09-24',
---                SDRecuperado, 0))),
---   ROUND(SUM(ValorRecebidoAposReneg)),
---   COUNT(*)
--- FROM `dadosfinanceiro-501613.looker_studio.renegociacao_base`;
-
--- ####################################################################
--- CONFERENCIA: renegociacoes abertas x encerradas
--- ####################################################################
--- SELECT StatusRenegociacao, COUNT(*) AS contratos, ROUND(SUM(SaldoDevedor), 2) AS saldo_devedor
--- FROM `dadosfinanceiro-501613.looker_studio.renegociacao_base`
--- WHERE documentIdentificationId = 'CT'
--- GROUP BY 1
--- ORDER BY 1;
+-- GROUP BY 1, 2 ORDER BY 1, 2;
