@@ -1,0 +1,11 @@
+pandas
+numpy
+pyarrow
+db-dtypes
+openpyxl
+requests
+aiohttp
+python-dateutil
+google-auth
+google-cloud-bigquery
+pandas-gbq

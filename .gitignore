@@ -1,0 +1,11 @@
+# NUNCA subir credenciais / senhas
+credencial*.json
+*.json.key
+Credenciais.py
+.env
+
+# gerados ao rodar
+logs/
+__pycache__/
+*.pyc
+.venv/

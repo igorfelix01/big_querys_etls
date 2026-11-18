@@ -1,0 +1,115 @@
+OTIMIZACOES DA ATUALIZACAO DIARIA  -  16/11/2026
+Regra: nenhuma regra de negocio mudou. Mesmas fontes, mesmos filtros,
+mesmas colunas e o mesmo resultado nas tabelas.
+
+======================================================================
+1. CARGA DO SIENGE (era a parte mais demorada)  ->  sienge_rapido.py
+======================================================================
+Antes: InserirDados\AtualizacaoDiaria\Atualizacao.py rodava 6 cargas
+uma depois da outra (Clientes, Unidades, Vendas, A Receber, Recebidas
+Historico, Recebidas Atualizavel).
+
+Agora o sienge_rapido.py IMPORTA as funcoes dos seus scripts (nao copia,
+nao altera nada neles: a API, os periodos, o tratamento das colunas, o
+schema e a gravacao sao os deles) e so muda a organizacao:
+
+  a) As 6 cargas rodam ao mesmo tempo.
+
+  b) A Receber e Recebidas (historico e atualizavel): antes cada script
+     pedia um lote de periodos (5, 3 ou 2), esperava o MAIS LENTO do lote
+     e depois enviava os periodos ao BigQuery UM POR UM. Nesse tempo a API
+     ficava parada. Agora as chamadas saem sem parar e cada periodo vai
+     para o BigQuery em segundo plano (ate 4 envios juntos por tabela).
+     As 3 cargas usam a mesma API (bulk-data/income): o total de chamadas
+     simultaneas e LIMITADO a 5 (o mesmo maximo que o historico ja usava),
+     para nao estourar o limite do Sienge. Da para mudar com --limite-api.
+
+  c) Seguranca nova: cada carga grava numa tabela de apoio
+     (raw.<tabela>__carga) e so no final, com a contagem de linhas
+     conferida, substitui a tabela do raw de uma vez. Se der erro no meio,
+     a tabela do raw continua inteira com a carga anterior (antes ficava
+     pela metade - foi o que fez sumir 2024 dos graficos).
+
+  d) Clientes, Vendas e Unidades: as paginas da API (200 por pagina) sao
+     pedidas 2 de cada vez (os seus scripts ja abriam 2 conexoes) - as
+     mesmas paginas, juntadas na mesma ordem.
+
+  Voltar ao jeito antigo: python atualizar_tudo.py --sienge-original
+
+  TESTE (sem internet, com uma API e um BigQuery simulados, rodando o
+  codigo dos SEUS scripts): fluxo antigo x fluxo novo deram tabelas
+  IGUAIS linha a linha nas 6 tabelas (recebidas_historico,
+  recebidas_atualizavel, areceber, clientes, vendas, unidades).
+  Teste de erro: API falhando no meio do historico -> a tabela do raw
+  continuou com a carga anterior, sem mudanca.
+  Tempo no teste simulado (API respondendo em ~1 s por chamada, envio ao
+  BigQuery ~1 s): antigo 390 s -> novo 78 s (5x mais rapido). No dia a dia
+  o ganho depende de quanto o Sienge demora para responder; o primeiro log
+  da rotina nova mostra o tempo de cada carga no RESUMO.
+
+======================================================================
+2. ORDEM DAS CARGAS (atualizar_tudo.py)
+======================================================================
+  FASE 1 (tudo junto): Sienge + Unidades das vendas + Obras + planilhas
+          do BI + (com --com-planilhas) as planilhas do InserirDados,
+          agora tambem juntas entre si (cada uma grava uma tabela).
+  FASE 2: Telefones (se existir script; se nao existir, so avisa).
+  Depois: SQLs.
+  Unidades das vendas saiu da fase 2 para a 1: le direto da API, nao
+  depende de nenhuma outra carga.
+
+======================================================================
+3. SQLs (sql_bigquery)  -  base: os SQLs que voces usam no banco
+======================================================================
+  Otimizacoes (nao mudam o resultado):
+  - Conferencias (SELECTs soltos que so mostram numeros na tela) viram
+    comentario: nao rodam na atualizacao automatica. Continuam no arquivo
+    para rodar na mao.
+  - CTE usada 2 ou mais vezes vira tabela temporaria: o BigQuery calcula
+    1 vez em vez de repetir (CTEs pequenas, que nao leem tabela, ficam
+    como estao - recalcular e mais barato).
+  - PARTITION BY tirado das tabelas (a validade de 60 dias das particoes
+    apagava meses antigos). Mesmas linhas.
+  - executar_pipeline.py roda ate 10 SQLs ao mesmo tempo, na ordem das
+    dependencias, comecando pelos de caminho mais longo.
+
+  Teste (DuckDB, com dados simulados, versao original x otimizada):
+  IGUAIS: InadimRegularizacao, ProjecaoCaixa, RenegociacaoEficiencia,
+  SafraVendas, concentracao risco, looker_recebiveis_matriz_projetos,
+  recebiveis_cards_MEDIDOR, recebiveis_cards_gauge_v2,
+  recebiveis_cards_situacao_v1, recebiveis_composicao_competencia,
+  recebiveis_diario_GRAFICOPRINCIPAL, recebiveis_diario_previsto (2 tabelas),
+  recebiveiscardsfiltraveis.
+  Os demais nao rodam no DuckDB (funcoes so do BigQuery); para esses use
+  conferir_igualdade.py, que roda o ORIGINAL no BigQuery num dataset
+  separado e compara linha a linha com a tabela gerada.
+
+  Versao escolhida quando a salva no BigQuery era diferente da que roda
+  na automacao ("a logica correta"):
+  - versao da AUTOMACAO (corrige a salva):
+      GerarClassificarRecebidas e GerarRenegociacoes  datas '15/10/2024' e
+                                         com hora deixavam de virar NULL
+      Nome_companhias      le raw.nome_companhias (atualizada todo dia pela
+                           planilha); a trusted nao era mais atualizada
+      RiscoContratos       corta o historico no distrato (distrato conta
+                           como "virou inadimplente")
+      looker_renegociacao_base  + colunas RenegociacaoAberta,
+                           StatusRenegociacao, ParcelasEmAberto,
+                           ParcelasVencidasEmAberto (as outras iguais)
+      obras_tabela_credores     escolha do nome da empresa sem empate
+      db_perfomados        nao quebra se a planilha nao estiver carregada
+      Saldo Devedor        TO_JSON com numeros grandes como texto (o que
+                           roda hoje)
+  - Looker mapa estados: versao da AUTOMACAO (UF por grupo, com lat/long).
+      A versao salva le raw.empreendimentos_uf, que nao existe no BigQuery
+      (precisa rodar antes "Empreendimentos uf.py gerar", conferir a
+      planilha e "Empreendimentos uf.py carregar"). Quando essa tabela
+      existir, da para trocar para a versao salva.
+  Mantidos (rodam hoje e nao estavam na lista):
+      ResumoContratos_base.sql  gera analytics.ResumoContratos, que o
+                                ResumoContratos.sql le
+      looker_inadimplencia_ano_venda_mensal.sql  grafico do Fabio
+  Fora da lista: ControladoriaCarteira.sql (consulta solta com datas
+  fixas, nao grava tabela), 3 arquivos vazios e
+  looker_studio.recebiveis_filtrados.sql (igual ao
+  recebiveis_cards_situacao_v1.sql).

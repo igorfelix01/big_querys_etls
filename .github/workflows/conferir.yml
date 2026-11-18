@@ -1,0 +1,27 @@
+# Roda sozinho no GitHub a cada alteracao enviada (push).
+# Confere se os Pythons nao tem erro de sintaxe e se a ordem dos SQLs
+# (dependencias) continua valida. Nao acessa o BigQuery.
+name: conferir
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  conferir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bibliotecas
+        run: pip install google-cloud-bigquery pandas aiohttp
+      - name: Sintaxe dos Pythons
+        run: python -m py_compile *.py cargas_planilhas_BI/*.py
+      - name: Ordem dos SQLs (simulacao, sem BigQuery)
+        run: python executar_pipeline.py --simular
+      - name: Nenhuma credencial no repositorio
+        run: |
+          if git ls-files | grep -Ei 'credencial.*\.json|Credenciais\.py'; then
+            echo "ERRO: arquivo de credencial no repositorio"; exit 1; fi

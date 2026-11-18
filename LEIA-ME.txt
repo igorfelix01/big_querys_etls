@@ -1,0 +1,175 @@
+ATUALIZACAO COMPLETA (Sienge -> BigQuery -> Looker)  -  versao 16/11/2026 (otimizada)
+
+ONDE COLOCAR
+  Descompactar este zip DENTRO da pasta BigQuery_Financeiro
+  (a mesma que tem a pasta InserirDados). Fica assim:
+
+    BigQuery_Financeiro\
+      InserirDados\              (seus scripts - nao mexer)
+      AtualizacaoCompleta\       (ESTE pacote)
+        ATUALIZAR_TUDO.bat       <- dois cliques para rodar tudo
+        AGENDAR_TODO_DIA.bat     <- dois cliques uma vez: roda todo dia 05:00
+        atualizar_tudo.py
+        sienge_rapido.py         (carga do Sienge mais rapida - usa os seus scripts)
+        conferir_igualdade.py    (opcional: prova no BigQuery que o resultado e igual)
+        AtualizarVendasUnidades.py
+        executar_pipeline.py
+        cargas_planilhas_BI\     (3 cargas novas)
+        sql_bigquery\            (TODOS os SQLs, versao certa)
+        logs\                    (criada sozinha)
+
+  Se ja existe uma pasta AtualizacaoCompleta antiga: apague ela antes
+  e descompacte esta no lugar.
+
+BOTOES (dois cliques)
+  ATUALIZAR_TUDO.bat              tudo: Sienge + obras + planilhas do BI + SQLs
+  ATUALIZAR_SO_SQL.bat            so os SQLs (usa o raw que ja esta no BigQuery)
+  ATUALIZAR_PLANILHAS_60_DIAS.bat so as planilhas (BI + InserirDados) + SQLs.
+                                  O BigQuery apaga tabelas com 60 dias; as de
+                                  planilha (db_perfomados, situacoes, contas
+                                  bancarias, cobranca 3P...) so eram carregadas
+                                  com --com-planilhas e sumiam. Rode quando
+                                  aparecer "Not found: raw.xxx" no log.
+  AGENDAR_TODO_DIA.bat            (uma vez) agenda ATUALIZAR_TUDO todo dia 05:00
+                                  e ATUALIZAR_PLANILHAS_60_DIAS todo domingo 06:00
+  tirar_validade_60_dias.py       depois de ATIVAR O FATURAMENTO do projeto no
+                                  Google Cloud: tira o prazo de 60 dias de vez
+                                  (python tirar_validade_60_dias.py)
+
+  Se o Sienge der erro so numa parte (ex.: Clientes) mas o A Receber e as
+  Recebidas forem carregados no dia, os SQLs rodam assim mesmo (aviso no log).
+  cri_excel.py NAO roda mais nas planilhas (Excel parado desde 2025; o raw.cri
+  vem do cri_extranet_bigquery.py).
+
+ORDEM (o ATUALIZAR_TUDO.bat ja faz nesta ordem)
+  1.  Dados do Sienge  -> sienge_rapido.py (deste pacote), com as funcoes
+        dos scripts de InserirDados\AtualizacaoDiaria (nada muda neles)
+        raw.clientes, raw.unidades, raw.vendas, raw.areceber,
+        raw.recebidas_historico, raw.recebidas_atualizavel
+        as 6 cargas AO MESMO TEMPO; cada tabela so e trocada no final, se
+        a carga inteira deu certo (erro no meio = tabela anterior fica).
+        Para voltar ao jeito antigo: python atualizar_tudo.py --sienge-original
+  1b. Unidades das vendas -> AtualizarVendasUnidades.py (raw.vendas_unidades)
+  1c. Telefones -> o script do InserirDados que carrega raw.clientes_telefones
+  2.  Obras -> InserirDados\Obrasatt.py (raw.pagas_obras, raw.planejamento_obras)
+  2b. Planilhas do BI (pasta cargas_planilhas_BI deste pacote)
+        nome_companhias.py              9. BI\BI\Nome_Companhias.xlsx
+        reparcelamento_analise.py       9. BI\BI\Bases_API\Extratos\EXTRATO_GERAL_Reparcelamento_Analise.csv
+        distratos_controle_operacoes.py 9. BI\BI\DISTRATOS - CONTROLE OPERAÇOES.xlsx
+        (os MESMOS arquivos que o Power BI le)
+  3.  SQLs -> executar_pipeline.py + sql_bigquery deste pacote
+        todos os .sql, na ordem das dependencias (arquivos independentes
+        rodam juntos). Se a etapa 1 falhar, os SQLs NAO rodam (o raw
+        fica pela metade e estragaria as tabelas) - rode de novo.
+  Depois: no Looker, "Atualizar dados" (ou espera o cache de ate 12h)
+
+  Opcional (outras planilhas do InserirDados):
+     ATUALIZAR_TUDO.bat --com-planilhas
+     situacoes, classificacao_bloko_niveis, nome_companhias_pag,
+     comparativo (db_perfomados.py), cri, contas_bancarias, cobranca3p,
+     linhas_temporais_geral
+  So os SQLs:
+     ATUALIZAR_TUDO.bat --so-sql
+
+O QUE MUDOU NOS SQLs (em relacao a pasta sql_bigquery antiga)
+  NOVOS
+    dashboard_cliente.sql                   analytics.Cliente (filtros do gerar_dashboard.py)
+    looker_data_atualizacao.sql             card "Dados atualizados em" no Looker
+    looker_recebiveis_diario_previsto.sql   Recebiveis Diarios: Recebido x Previsto x
+                                            Competencia (previsto pela carteira do dia 1)
+    looker_resumo_contratos_mensal.sql      Quantidade de Contratos (1 foto por mes)
+    looker_recebiveis_cards_mensal_filtravel.sql  medidor Min/Media/Max e cards de media
+                                            FILTRAVEIS por empresa/projeto
+    zz_looker_views_projeto.sql             views looker_studio.<tabela>_projeto com
+                                            projectName (seletor Projeto em todas as
+                                            fontes). Roda por ultimo.
+    looker_renegociacao_base.sql            pagina Renegociacao (grafico, tabela, composicao, cards SD)
+    looker_renegociacao_recebimentos.sql    pagina Renegociacao (cards Recebido)
+    looker_apresentacao_recebimentos.sql    pagina Apresentacao (colunas, Recebimento 2025/2026)
+    distratos_controle_operacoes_transformacoes.sql   planilha de distratos (fiel ao PQ)
+    looker_distratos_vgv_recebido.sql       VGV x Recebido, Distratos por Data da Venda, Detalhamento
+    looker_renegociacao_numero.sql          Primeira / Segunda / Terceira ou Quarta Renegociacao
+  CORRIGIDOS
+    reparcelamento_analise.sql              datas vinham vazias
+    looker_recebiveis_carteira_atrasada.sql periodo fixo 2010 a 2024
+    looker_recebiveis_cards_carteira.sql    cards da Carteira pelas DAX
+    GerarRenegociacoes.sql                  agora GRAVA analytics.fato_renegociacoes
+                                            (antes era so um SELECT, nao gravava nada)
+    Nome_companhias.sql                     agora le raw.nome_companhias (a que o
+                                            nome_companhias.py carrega)
+    looker_renegociacao_numero.sql          mesmo total por mes do grafico de Situacao
+    Cri.sql / looker_cri_pmt_amortizacao.sql  CRI + grafico PMT e Curva de Amortizacao
+    GerarClassificarRecebidas.sql           sem raw.centros_de_custos (nao existe)
+    looker_mapa_estados.sql                 estados fixos por empresa (sem planilha)
+    HistoricoInadimplencia.sql              SEM particao (o dataset apaga particoes com
+                                            mais de 60 dias), datas de 1901 fora,
+                                            parcelas "1/1" repetidas
+  REMOVIDOS
+    looker_recebiveis_carteira_futura.sql   (substituido pelos cards da carteira)
+    "recebiveis_composicao_competencia .sql" (copia repetida, com espaco no nome)
+
+NAO MEXE NAS SUAS PASTAS
+  Ele so le os seus scripts. Nao copia nem grava nada no InserirDados.
+  O unico arquivo que ele cria e o log: AtualizacaoCompleta\logs.
+
+NAO RODAR JUNTO / NAO USAR MAIS
+  - a pasta sql_bigquery ANTIGA (fora deste pacote): pode apagar ou guardar,
+    o pacote usa so a dele
+  - InserirDados\reparcelamento_analise.py ANTIGO (lia um Extratos_combined.csv
+    velho e deixava as datas erradas) -> substituido pelo do pacote
+  - Recebidas\atualizar_bigquery.py (roda consultas ANTIGAS salvas no BigQuery)
+  - atualizar_raw.py (substituido pelo --com-planilhas)
+  - Vendas\vendas.py (regrava a raw.vendas toda em texto)
+  - comparativo.py (grava a mesma raw.comparativo que o db_perfomados.py)
+
+NO EC2
+  1. Copiar a pasta BigQuery_Financeiro inteira (com InserirDados e este pacote)
+     e a planilha Bases_API\Obras\Empreendimentos.xlsx
+  2. Colocar o credencial_bigquery.json (conta de servico) na AtualizacaoCompleta
+  3. Linux: bash instalar_ec2.sh  (instala, confere e agenda 05:00)
+  4. Conferir a qualquer hora: .venv/bin/python conferir_ec2.py
+  As planilhas do BI (etapa 2b) so existem no computador com o SharePoint:
+  no EC2 essa etapa e pulada sozinha e os SQLs usam a ultima carga delas.
+
+LOG
+  AtualizacaoCompleta\logs\atualizacao_completa_AAAA-MM-DD.log  (etapas)
+  AtualizacaoCompleta\logs\pipeline_AAAA-MM-DD.log              (cada SQL)
+
+ANALISES NOVAS (so elas)
+  ATUALIZAR_ANALISES_COBRANCA.bat roda somente:
+    looker_cobranca_risco_rolagem.sql, looker_inadimplencia_regularizacao.sql,
+    looker_renegociacao_eficacia.sql, looker_concentracao_risco.sql,
+    looker_projecao_caixa.sql
+  (alerta precoce e safra ficam so na atualizacao diaria)
+
+MAIS RAPIDO (versao 06/11/2026)
+  - Cargas em 2 fases, cada uma ao mesmo tempo:
+      FASE 1: Sienge + Obras + planilhas do BI
+      FASE 2: Unidades das vendas + Telefones
+    (python atualizar_tudo.py --sequencial volta ao jeito antigo)
+  - SQLs: ate 10 ao mesmo tempo (variavel PARALELO_SQL), comecando pelos
+    que tem o caminho mais longo (usa os tempos dos ultimos logs).
+  - Saldo Devedor.sql le o raw como JSON nativo (bem mais rapido).
+  - Inclui as analises novas (rolagem, alerta precoce, safra,
+    regularizacao, renegociacao, concentracao, projecao de caixa,
+    historico cliente): rodam sozinhas na ordem certa.
+
+SO AS RECEBIDAS E O QUE DEPENDE DELAS
+  ATUALIZAR_GRAFICO_RECEBIDAS.bat = python executar_pipeline.py
+    --sem-conferir-raw --a-partir-de Recebidas.sql GerarClassificarRecebidas.sql GerarRenegociacoes.sql
+  (qualquer SQL pode ser usado no --a-partir-de: roda ele e tudo que depende dele)
+
+OTIMIZACAO DE TEMPO (12/11/2026)
+  Ver OTIMIZACOES.txt: tabelas temporarias nas etapas repetidas, conferencias
+  desativadas na rotina automatica, tabelas sem particao. Logica igual.
+
+CONFERIR QUE O RESULTADO E IGUAL (opcional, uma vez)
+  Depois de uma atualizacao completa, rode:
+    python conferir_igualdade.py --originais "..\InserirDados\considerarsomenteessessqls"
+  Ele roda os SQLs ORIGINAIS num dataset separado (conferencia, apagado em
+  1 dia) e compara linha a linha com as tabelas geradas pelos otimizados.
+  Nao mexe em nenhuma tabela de verdade. Detalhes em OTIMIZACOES.txt.
+
+GITHUB (alteracoes vao sozinhas para o EC2)
+  Veja GUIA_GITHUB_EC2.txt. Resumo: a pasta AtualizacaoCompleta vira um
+  repositorio privado no GitHub; o EC2 faz "git pull" antes de cada rotina.

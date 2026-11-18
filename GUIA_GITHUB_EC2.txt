@@ -1,0 +1,99 @@
+GITHUB -> EC2: TODA ALTERACAO VAI SOZINHA PARA A ROTINA DIARIA
+================================================================
+
+COMO FUNCIONA
+  Voce altera os arquivos no seu computador e envia para o GitHub.
+  Todo dia, antes de rodar (05:00), o EC2 baixa a versao mais nova do
+  GitHub (git pull) e roda com ela. Nao precisa copiar nada para o EC2.
+
+    seu computador --(GitHub Desktop: Commit + Push)--> GitHub
+    EC2 05:00: atualizar_tudo.sh -> git pull -> atualizar_tudo.py
+
+  - So a pasta AtualizacaoCompleta vai para o GitHub.
+  - Credenciais NUNCA vao (o .gitignore bloqueia credencial*.json e
+    Credenciais.py). A pasta InserirDados (com a senha do Sienge) fica
+    so no EC2 e no seu computador.
+  - A cada envio, o GitHub confere sozinho se os Pythons nao tem erro e
+    se a ordem dos SQLs esta certa (aba "Actions" do repositorio).
+  - Se o GitHub estiver fora do ar, o EC2 roda com a versao que ja tem.
+
+----------------------------------------------------------------
+PARTE 1 - CRIAR O REPOSITORIO (uma vez, no seu computador)
+----------------------------------------------------------------
+1. Entre em github.com (crie uma conta se nao tiver).
+2. Instale o GitHub Desktop: desktop.github.com  e faca login.
+3. Coloque a pasta AtualizacaoCompleta (deste zip) onde voce vai
+   trabalhar, por exemplo dentro da BigQuery_Financeiro.
+   ATENCAO: se tiver o arquivo credencial_bigquery.json dentro dela,
+   ele NAO sobe (esta no .gitignore) - pode deixar.
+4. GitHub Desktop: File -> Add local repository -> escolha a pasta
+   AtualizacaoCompleta -> vai dizer que nao e um repositorio ->
+   clique "create a repository" -> Create repository.
+5. Clique "Publish repository":
+     Name: atualizacao-bigquery
+     MARQUE "Keep this code private"   (IMPORTANTE: privado)
+   -> Publish repository.
+
+----------------------------------------------------------------
+PARTE 2 - LIGAR O EC2 AO GITHUB (uma vez, no EC2)
+----------------------------------------------------------------
+Entre no EC2 (ssh) e rode os comandos abaixo.
+
+1. Instalar o git:
+     sudo apt-get install -y git        (Ubuntu)
+     sudo dnf install -y git            (Amazon Linux)
+
+2. Criar uma chave SO DE LEITURA para o EC2 baixar do GitHub:
+     ssh-keygen -t ed25519 -f ~/.ssh/github_bigquery -N ""
+     cat ~/.ssh/github_bigquery.pub
+   Copie a linha que aparecer (comeca com ssh-ed25519).
+
+3. No GitHub: abra o repositorio -> Settings -> Deploy keys ->
+   Add deploy key
+     Title: EC2
+     Key:   cole a linha
+     NAO marque "Allow write access"   (so leitura)
+   -> Add key.
+
+4. Dizer ao EC2 para usar essa chave:
+     printf 'Host github.com\n  IdentityFile ~/.ssh/github_bigquery\n  StrictHostKeyChecking accept-new\n' >> ~/.ssh/config
+     chmod 600 ~/.ssh/config
+     ssh -T git@github.com
+   (deve responder "...successfully authenticated..." - pode ignorar
+    o "does not provide shell access")
+
+5. Trocar a pasta atual pelo clone do GitHub (troque SEU_USUARIO):
+     cd ~/BigQuery_Financeiro            (a pasta que tem InserirDados)
+     mv AtualizacaoCompleta AtualizacaoCompleta_antiga
+     git clone git@github.com:SEU_USUARIO/atualizacao-bigquery.git AtualizacaoCompleta
+     cp AtualizacaoCompleta_antiga/credencial_bigquery.json AtualizacaoCompleta/
+     cd AtualizacaoCompleta
+     bash instalar_ec2.sh
+   (o instalar_ec2.sh cria o ambiente e agenda todo dia 05:00)
+
+6. Testar:
+     ./atualizar_tudo.sh --so-sql
+   No comeco do log deve aparecer "git pull (versao mais nova do GitHub)".
+   Deu certo? Pode apagar a AtualizacaoCompleta_antiga.
+
+----------------------------------------------------------------
+NO DIA A DIA (no seu computador)
+----------------------------------------------------------------
+1. Altere/crie os arquivos na pasta AtualizacaoCompleta
+   (ex.: troque um .sql dentro de sql_bigquery).
+2. GitHub Desktop: aparecem os arquivos alterados ->
+   escreva um resumo embaixo (ex.: "renegociacao confere no Sienge")
+   -> Commit to main -> Push origin.
+3. Pronto: a proxima rotina do EC2 (05:00) ja usa a versao nova.
+   Quer aplicar na hora? No EC2:  ~/BigQuery_Financeiro/AtualizacaoCompleta/atualizar_tudo.sh --so-sql
+
+Ver se o envio passou na conferencia: no site do repositorio, aba
+"Actions" (verde = ok, vermelho = clique para ver o erro).
+
+Voltar uma versao que deu problema: GitHub Desktop -> History ->
+botao direito no envio -> "Revert changes in commit" -> Push origin.
+
+REGRAS
+  - NAO edite arquivos direto no EC2 (o git pull para de atualizar).
+    Alterou la sem querer?  cd ...AtualizacaoCompleta && git checkout -- .
+  - NUNCA coloque senha/credencial dentro de um .py ou .sql do repositorio.

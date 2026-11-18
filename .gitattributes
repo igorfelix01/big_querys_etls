@@ -1,0 +1,5 @@
+# .bat do Windows precisam de CRLF; .sh do Linux (EC2) precisam de LF
+*.bat text eol=crlf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.sql text eol=lf
